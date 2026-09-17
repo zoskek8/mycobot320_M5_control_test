@@ -1046,6 +1046,21 @@ _HYSTERESIS_SAFETY_SCALE = 0.5         # 확인된 관절은 계산된 보정의
 _J3_GRAVITY_A = 0.4721    # sin(θ2+θ3) 계수
 _J3_GRAVITY_B = 0.1117    # 상수항
 
+# [10차, §51 준비] §50 모델은 아직 실기 A/B 미검증인 채로 스위치까지 지워
+# 놓아서 ON/OFF 비교가 불가능했다. 검증 끝날 때까지만 쓰는 임시 플래그 -
+# 통과하면 다시 지운다(코드에 영구히 남기지 않음).
+#
+# 세 값을 갖는 이유 - §51은 서로 다른 두 실험을 한다:
+#   "gravity" : §50 중력처짐 모델 (현재 채택안)
+#   "static"  : §48 이전의 정지 캘리브레이션 모델. **A/B의 대조군** -
+#               "새 모델이 기존 방식보다 나은가"를 §49와 같은 기준으로 본다.
+#   "none"    : J3 보정 전혀 없음. **예측 검증의 기준선** - 모델이 예측하는
+#               편향(0.4721*sin+0.1117)은 "보정이 없을 때 생기는 처짐"이므로,
+#               예측과 실측을 직접 대조하려면 아무 보정도 없는 상태를 재야
+#               한다. static과 비교하면 이미 한 번 보정된 잔차라 예측값과
+#               비교 대상이 어긋난다.
+J3_CORRECTION_MODE = "gravity"      # "gravity" | "static" | "none"
+
 
 def _fit_offset_models():
     arr_cmd = np.array([p[0] for p in _STATIC_ERR_POSES_DEG], dtype=float)
@@ -1170,7 +1185,19 @@ def joint_offset_correction(desired_angles_deg):
     # 주행 중 부호가 반대였고(§48.2), 한 곡선에서 잰 상수는 다른 곡선에서
     # 해로웠다(§50). 자세의 함수라 곡선에 무관하다. 강도 100%(주행 데이터
     # 자체가 양방향 평균이라 방향이력이 이미 평균돼 있음).
-    err_j3 = _J3_GRAVITY_A * math.sin(math.radians(d[1] + d[2])) + _J3_GRAVITY_B
+    if J3_CORRECTION_MODE == "gravity":
+        err_j3 = _J3_GRAVITY_A * math.sin(math.radians(d[1] + d[2])) + _J3_GRAVITY_B
+    elif J3_CORRECTION_MODE == "static":
+        # [10차, §51 준비] A/B 대조군 - §48 이전의 정지모델(J4와 같은 패턴).
+        # §49가 실제로 비교했던 대상과 맞춰야 같은 기준으로 비교된다.
+        err_j3 = (m["j3_coupled"] if abs(d[1]) >= 55 else m["j3_base"]) * _HYSTERESIS_SAFETY_SCALE
+    elif J3_CORRECTION_MODE == "none":
+        err_j3 = 0.0                     # 예측 검증용 기준선 - 위 설명 참고
+    else:
+        raise ValueError(
+            f"J3_CORRECTION_MODE는 'gravity'/'static'/'none' 중 하나여야 합니다 "
+            f"(현재: {J3_CORRECTION_MODE!r}). 오타로 조용히 보정이 빠지면 "
+            f"실험 결과를 통째로 잘못 해석하게 되므로 예외를 낸다.")
     c[2] = d[2] - err_j3
 
     # J4는 같은 방식이 안 통해(편향 0.134로 작음) 기존 정지모델 유지.
